@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import string
 from typing import TYPE_CHECKING, Any, Literal
@@ -258,7 +259,11 @@ class HGAConversationEntity(conversation.ConversationEntity, AbstractConversatio
         # Use the already-configured chat model from __init__.py
         base_llm = runtime_data.chat_model
         try:
-            chat_model_with_tools = base_llm.bind_tools(tools)
+            # bind_tools can trigger blocking imports, run in executor
+            loop = asyncio.get_event_loop()
+            chat_model_with_tools = await loop.run_in_executor(
+                None, base_llm.bind_tools, tools
+            )
         except AttributeError:
             LOGGER.exception("Error during conversation processing.")
             intent_response = intent.IntentResponse(language=user_input.language)

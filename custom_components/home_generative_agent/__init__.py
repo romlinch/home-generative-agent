@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -319,11 +319,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HGAConfigEntry) -> bool:
 
     http_client = get_async_client(hass)
 
-    # Instantiate providers.
-    openai_provider: RunnableSerializable[LanguageModelInput, BaseMessage] | None = None
-    if openai_ok:
+    # Helper function to init OpenAI provider (blocking)
+    def _init_openai() -> RunnableSerializable[LanguageModelInput, BaseMessage] | None:
         try:
-            openai_provider = ChatOpenAI(
+            return ChatOpenAI(
                 api_key=api_key,
                 timeout=120,
                 http_async_client=http_client,
@@ -335,11 +334,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HGAConfigEntry) -> bool:
             )
         except Exception:
             LOGGER.exception("OpenAI provider init failed; continuing without it.")
+            return None
 
-    ollama_provider: RunnableSerializable[LanguageModelInput, BaseMessage] | None = None
-    if ollama_ok:
+    # Helper function to init Ollama provider (blocking)
+    def _init_ollama() -> RunnableSerializable[LanguageModelInput, BaseMessage] | None:
         try:
-            ollama_provider = ChatOllama(
+            return ChatOllama(
                 model=RECOMMENDED_OLLAMA_CHAT_MODEL,
                 base_url=ollama_url,
             ).configurable_fields(
@@ -356,11 +356,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HGAConfigEntry) -> bool:
             )
         except Exception:
             LOGGER.exception("Ollama provider init failed; continuing without it.")
+            return None
 
-    gemini_provider: RunnableSerializable[LanguageModelInput, BaseMessage] | None = None
-    if gemini_ok:
+    # Helper function to init Gemini provider (blocking)
+    def _init_gemini() -> RunnableSerializable[LanguageModelInput, BaseMessage] | None:
         try:
-            gemini_provider = ChatGoogleGenerativeAI(
+            return ChatGoogleGenerativeAI(
                 api_key=gemini_key,
                 model=RECOMMENDED_GEMINI_CHAT_MODEL,
             ).configurable_fields(
@@ -371,12 +372,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HGAConfigEntry) -> bool:
             )
         except Exception:
             LOGGER.exception("Gemini provider init failed; continuing without it.")
+            return None
 
-    # Embeddings: instantiate both, then select based on provider
-    openai_embeddings: OpenAIEmbeddings | None = None
-    if openai_ok:
+    # Helper function to init OpenAI embeddings (blocking)
+    def _init_openai_embeddings() -> OpenAIEmbeddings | None:
         try:
-            openai_embeddings = OpenAIEmbeddings(
+            return OpenAIEmbeddings(
                 api_key=api_key,
                 model=entry.options.get(
                     CONF_OPENAI_EMBEDDING_MODEL, RECOMMENDED_OPENAI_EMBEDDING_MODEL
@@ -385,11 +386,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HGAConfigEntry) -> bool:
             )
         except Exception:
             LOGGER.exception("OpenAI embeddings init failed; continuing without them.")
+            return None
 
-    ollama_embeddings: OllamaEmbeddings | None = None
-    if ollama_ok:
+    # Helper function to init Ollama embeddings (blocking)
+    def _init_ollama_embeddings() -> OllamaEmbeddings | None:
         try:
-            ollama_embeddings = OllamaEmbeddings(
+            return OllamaEmbeddings(
                 model=entry.options.get(
                     CONF_OLLAMA_EMBEDDING_MODEL, RECOMMENDED_OLLAMA_EMBEDDING_MODEL
                 ),
@@ -398,11 +400,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HGAConfigEntry) -> bool:
             )
         except Exception:
             LOGGER.exception("Ollama embeddings init failed; continuing without them.")
+            return None
 
-    gemini_embeddings: GoogleGenerativeAIEmbeddings | None = None
-    if gemini_ok:
+    # Helper function to init Gemini embeddings (blocking)
+    def _init_gemini_embeddings() -> GoogleGenerativeAIEmbeddings | None:
         try:
-            gemini_embeddings = GoogleGenerativeAIEmbeddings(
+            return GoogleGenerativeAIEmbeddings(
                 google_api_key=gemini_key,
                 model=entry.options.get(
                     CONF_GEMINI_EMBEDDING_MODEL, RECOMMENDED_GEMINI_EMBEDDING_MODEL
@@ -410,6 +413,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: HGAConfigEntry) -> bool:
             )
         except Exception:
             LOGGER.exception("Gemini embeddings init failed; continuing without them.")
+            return None
+
+    # Run blocking initializations in executor
+    loop = asyncio.get_event_loop()
+
+    async def _coro_or_sleep(
+        coro_fn: Callable[[], Any],
+        *,
+        skip: bool = False,
+    ) -> Any:
+        """Run coroutine if not skipped, else sleep."""
+        if not skip:
+            return await loop.run_in_executor(None, coro_fn)
+        await asyncio.sleep(0)
+        return None
+
+    openai_provider, ollama_provider, gemini_provider = await asyncio.gather(
+        _coro_or_sleep(_init_openai, skip=not openai_ok),
+        _coro_or_sleep(_init_ollama, skip=not ollama_ok),
+        _coro_or_sleep(_init_gemini, skip=not gemini_ok),
+    )
+
+    (
+        openai_embeddings,
+        ollama_embeddings,
+        gemini_embeddings,
+    ) = await asyncio.gather(
+        _coro_or_sleep(_init_openai_embeddings, skip=not openai_ok),
+        _coro_or_sleep(_init_ollama_embeddings, skip=not ollama_ok),
+        _coro_or_sleep(_init_gemini_embeddings, skip=not gemini_ok),
+    )
 
     # Choose active embedding provider
     embedding_model: (
